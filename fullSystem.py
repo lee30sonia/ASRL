@@ -6,6 +6,7 @@ from scipy import stats
 import cv2
 from scipy.ndimage.interpolation import shift
 import sys
+import math
 
 def create_environment():
     game = DoomGame()
@@ -23,6 +24,26 @@ def create_environment():
     game.init()     
     return game
 
+def turn90(game):
+    deg = round((game.get_game_variable(ANGLE) - 90)/90)*90
+    if deg < 0:
+        deg += 360
+        game.make_action([0, 0, 0, 0, 1], 10)
+    while game.get_game_variable(ANGLE) > deg+1:
+        game.make_action([0, 0, 0, 0, 1], int(math.ceil((game.get_game_variable(ANGLE) - deg)/10)))
+    #print(game.get_game_variable(ANGLE))
+
+def lookAround(game):
+    vision = game.get_state().screen_buffer
+    turn90(game)
+    vision = np.concatenate((vision, game.get_state().screen_buffer))
+    turn90(game)
+    vision = np.concatenate((vision, game.get_state().screen_buffer))
+    turn90(game)
+    vision = np.concatenate((vision, game.get_state().screen_buffer))
+    turn90(game)
+
+    return vision
 
 ### plotting ###
 def compute_receptive_field(act, x, y, bin_size):
@@ -123,15 +144,15 @@ class V1:
 sin60 = np.sqrt(3)/2.0
 
 class GCSheet:
-    def __init__(self, N, Ncpc=0, alphaC=0, eta=0.1):
+    def __init__(self, N, Ncpc=0, alpha=1.0, alphaC=0, eta=0.1):
         self.Nx = int(round(np.sqrt(N/sin60)))
         self.Ny = int(round(self.Nx * sin60))
         self.N = self.Nx * self.Ny
         #print(self.Nx, self.Ny)
         
         self.poses = [[i+1, j+1] for i in range(self.Nx) for j in range(self.Ny)] #poses[n-1] = [int(n/self.Ny)+1, n%self.Ny]
-        self.alpha = np.random.uniform(1.0/400, 2.6/400) # smaller -> larger spacing # [1,3]
-        print(self.alpha*400)
+        self.alpha = alpha/400 #np.random.uniform(1.0/400, 2.6/400) # smaller -> larger spacing # [1,3]
+        #print(self.alpha*400)
         self.beta = np.random.uniform(0, np.pi/3)
         self.R = np.array([[np.cos(self.beta), -np.sin(self.beta)], [np.sin(self.beta), np.cos(self.beta)]])
         
@@ -175,7 +196,7 @@ class GCpop:
         self.Nneurons = N*Nsheets
         self.sheets = []
         for i in range(Nsheets):
-            self.sheets.append(GCSheet(N, Ncpc, alphaC, eta))
+            self.sheets.append(GCSheet(N, Ncpc, 1.0+1.6/(Nsheets-1)*i,alphaC, eta))
             for t in range(300):
                 self.sheets[-1].dynamic()
         self.data = np.zeros((0, self.Nneurons))
@@ -364,7 +385,8 @@ class System:
             self.trainHopfield()
         
         ## visual pathway ##
-        self.Av1 = self.v1.response(game.get_state().screen_buffer)
+        #self.Av1 = self.v1.response(game.get_state().screen_buffer)
+        self.Av1 = self.v1.response(lookAround(game))
         if training:
             self.vpc.train(self.Av1, nIter=70)
         self.Avpc = self.vpc.estimate(self.Av1, e=0.8, record=True)
@@ -624,7 +646,8 @@ pos = [0,0]
 env_range = [[-190, 190], [-190, 190]]
 traj2 = []
 
-rat = System(game.get_state().screen_buffer, nSteps=5)
+#rat = System(game.get_state().screen_buffer, nSteps=5)
+rat = System(lookAround(game), nSteps=5)
 
 # exploration
 for i in range(1500):

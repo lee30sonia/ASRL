@@ -7,6 +7,7 @@ import cv2
 from scipy.ndimage.interpolation import shift
 import sys
 import math
+import scipy.io as sio
 
 def create_environment():
     game = DoomGame()
@@ -318,7 +319,7 @@ class CPC:
         Acpc = self.obj.estimate(np.concatenate((self.alpha*actV, (1-self.alpha)*actM), axis=1), e=e, record=record)
     
         # trainHopfield
-        n = Acpc.shape[1]
+        n = Acpc.shape[0]
         rw = np.matmul(Acpc.T, Acpc)
         mask = np.ones((n, n)) - np.identity(n)
         rw = rw*mask
@@ -345,9 +346,11 @@ vis = lookAround(game)
 v1 = V1(vis)
 Av1 = v1.response(vis)
 
+game.close()
+
 ## Visual Place Cells ##
 #vpc = PlaceCell(225, v1.nNeurons, eta=3, noise=0.010)
-vpc = PlaceCell(121, v1.nNeurons, eta=15, noise=0.005)
+vpc = PlaceCell(121, v1.nNeurons, eta=8, noise=0.005)
 Avpc = vpc.estimate(Av1, e=0.9)
 
 ## Motion Grid Cells ##
@@ -363,47 +366,27 @@ Ampc = mpc.estimate(Amgc, e=0.8)
 cpc = CPC(196, vpc.nNodes, mpc.nNodes, eta=15, noise=0.003, alpha=0.5)
 Acpc = cpc.estimate(Avpc, Ampc, e=0.2)
 
+data = sio.loadmat('data.mat', appendmat=False)
 #random.seed(897)
 for i in range(5000):
     if i%10 == 0:
         sys.stdout.write(str(i)+' ')
         sys.stdout.flush()
     
-    vInt = random.randint(3,6)
-    #v = np.array(randMove(game, True, vInt)[0]) * 13.62 / nSteps * (random.random()*0.1+0.95) # -5% ~ +5% noise
-    randMove(game, True, vInt)
-    v = (np.array([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]) - np.array(pos)) / nSteps
-    pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
-    
-    
     ## conjuctive & recurrent ##
     cpc.train(Avpc, Ampc, nIter=5)
     Acpc = cpc.estimate(Avpc, Ampc, e=0.2, record=True)
     
     ## visual pathway ##
-    #Av1 = v1.response(game.get_state().screen_buffer)
-    Av1 = v1.response(lookAround(game))
-    vpc.train(Av1, nIter=20)
+    Av1 = data['Av1'][i]
     Avpc = vpc.estimate(Av1, e=0.9, record=True)
     
     ## self-motion pathway ##
-    mgc.updateW(v)
-    for step in range(nSteps):
-        Amgc = mgc.dynamic(Acpc, True)
-        traj.append(pos)
-    mpc.train(Amgc, nIter=5)
-    Ampc = mpc.estimate(Amgc, e=0.8, record=True)
+    Ampc = data['Ampc'][i]
     
     
+traj2 = data['pos']
 
-traj2 = np.array(traj).reshape([-1,nSteps,2])[:, 0, :]
-plot_traj(traj2) # check that exploration covers well
-
-game.close()
-
-
-plot_receptive_field(mgc.data.T, np.array(traj), plot_size=[30,15], bin_length=int(len(traj)/15), fig_size=[15,30], fname="mgc")
-plot_receptive_field(mpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="mpc")
 
 # show the weight matrix
 #mapSize = [15,15]
@@ -427,19 +410,3 @@ print("rw_max: ", np.max(cpc.rw))
 fig = plt.figure()
 plt.imshow(cpc.rw)
 fig.savefig(fpath+"rw.png")
-
-# save data into .mat file
-#n=4
-#simData = {'pos': trajectory, 'v1': v1.data, 'vn_height': v1.vn_height, 'vn_width': v1.vn_width}
-#sio.savemat('data/v1data'+str(n)+'.mat', simData, appendmat=False)
-
-#for i in range(3):
-#    data = sio.loadmat('data/v1data'+str(i+1)+'.mat', appendmat=False)
-#    if i==0:
-#        v1data = data['v1']
-#        trajectory = data['pos']
-#        vn_height = np.asscalar(data['vn_height'])
-#        vn_width = np.asscalar(data['vn_width'])
-#    else:
-#        v1data = np.append(v1data, data['v1'], axis=0)
-#        trajectory = np.append(trajectory, data['pos'], axis=0)

@@ -7,6 +7,7 @@ import cv2
 from scipy.ndimage.interpolation import shift
 import sys
 import math
+import scipy.io as sio
 
 def create_environment():
     game = DoomGame()
@@ -101,7 +102,7 @@ def compute_receptive_field(act, x, y, bin_size):
         receptive_fields[neuron_idx] = ratemap;
     return receptive_fields;
 
-fpath="no-noise/"
+fpath="collect/"
 def plot_receptive_field(activity, traj, plot_size=[1,1], bin_length=50, fig_size=[10,10], fname="untitled"):
     ratemaps = compute_receptive_field(activity, traj[:, 0], traj[:, 1], [int(traj[:, 0].size/bin_length), int(traj[:, 1].size/bin_length)]);
     num_neuron = ratemaps.shape[0];
@@ -318,7 +319,7 @@ class CPC:
         Acpc = self.obj.estimate(np.concatenate((self.alpha*actV, (1-self.alpha)*actM), axis=1), e=e, record=record)
     
         # trainHopfield
-        n = Acpc.shape[1]
+        n = Acpc.shape[0]
         rw = np.matmul(Acpc.T, Acpc)
         mask = np.ones((n, n)) - np.identity(n)
         rw = rw*mask
@@ -347,7 +348,7 @@ Av1 = v1.response(vis)
 
 ## Visual Place Cells ##
 #vpc = PlaceCell(225, v1.nNeurons, eta=3, noise=0.010)
-vpc = PlaceCell(121, v1.nNeurons, eta=15, noise=0.005)
+vpc = PlaceCell(121, v1.nNeurons, eta=8, noise=0.005)
 Avpc = vpc.estimate(Av1, e=0.9)
 
 ## Motion Grid Cells ##
@@ -363,8 +364,9 @@ Ampc = mpc.estimate(Amgc, e=0.8)
 cpc = CPC(196, vpc.nNodes, mpc.nNodes, eta=15, noise=0.003, alpha=0.5)
 Acpc = cpc.estimate(Avpc, Ampc, e=0.2)
 
+Av1data = []
 #random.seed(897)
-for i in range(5000):
+for i in range(2000):
     if i%10 == 0:
         sys.stdout.write(str(i)+' ')
         sys.stdout.flush()
@@ -383,6 +385,7 @@ for i in range(5000):
     ## visual pathway ##
     #Av1 = v1.response(game.get_state().screen_buffer)
     Av1 = v1.response(lookAround(game))
+    Av1data.append(Av1data)
     vpc.train(Av1, nIter=20)
     Avpc = vpc.estimate(Av1, e=0.9, record=True)
     
@@ -401,6 +404,10 @@ plot_traj(traj2) # check that exploration covers well
 
 game.close()
 
+# save data into .mat file
+#n=4
+simData = {'pos': traj2, 'Av1': np.array(Av1data), 'Ampc': mpc.data}
+sio.savemat('data.mat', simData, appendmat=False)
 
 plot_receptive_field(mgc.data.T, np.array(traj), plot_size=[30,15], bin_length=int(len(traj)/15), fig_size=[15,30], fname="mgc")
 plot_receptive_field(mpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="mpc")
