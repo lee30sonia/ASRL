@@ -79,7 +79,7 @@ def compute_receptive_field(act, x, y, bin_size):
         receptive_fields[neuron_idx] = ratemap;
     return receptive_fields;
 
-fpath="noisy-5/"
+fpath="n5000-no-noise/"
 def plot_receptive_field(activity, traj, plot_size=[1,1], bin_length=50, fig_size=[10,10], fname="untitled"):
     ratemaps = compute_receptive_field(activity, traj[:, 0], traj[:, 1], [int(traj[:, 0].size/bin_length), int(traj[:, 1].size/bin_length)]);
     num_neuron = ratemaps.shape[0];
@@ -185,7 +185,8 @@ class GCSheet:
         tau = 0.8
         B = np.matmul(self.w, self.A.T)
         if Acpc is not None:
-            self.A = (1-self.alphaC) * np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None) + self.alphaC * np.dot(Acpc, self.Wcpc).reshape((-1))
+            self.A = (1-self.alphaC) * np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None) + self.alphaC * np.dot(Acpc, self.Wcpc).reshape((-1)) / self.Wcpc.shape[0] #normalize by Ncpc
+            #self.A = (1-self.alphaC) * np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None) + self.alphaC * np.dot(Acpc, self.Wcpc).reshape((-1)) / np.sum(Acpc) * np.sum(self.A)
         else:
             self.A = np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None)
         
@@ -285,12 +286,25 @@ class CPC:
     def __init__(self, N, nVPC, nMPC, eta=1, noise=0.003, alpha=0.3, inFilter=1):
         self.alpha = alpha
         self.obj = PlaceCell(N, nVPC+nMPC, eta=eta, noise=noise, inFilter=inFilter)
+        self.cnt = 0
+        self.rw = np.zeros([N,N])
 
     def train(self, actV, actM, nIter=1):
         self.obj.train(np.concatenate((self.alpha*actV, (1-self.alpha)*actM), axis=1), nIter)
                  
     def estimate(self, actV, actM, e=0.0, record=False):
-        return self.obj.estimate(np.concatenate((self.alpha*actV, (1-self.alpha)*actM), axis=1), e=e, record=record)
+        Acpc = self.obj.estimate(np.concatenate((self.alpha*actV, (1-self.alpha)*actM), axis=1), e=e, record=record)
+    
+        # trainHopfield
+        n = Acpc.shape[0]
+        rw = np.matmul(Acpc.T, Acpc)
+        mask = np.ones((n, n)) - np.identity(n)
+        rw = rw*mask
+        if np.linalg.norm(rw.reshape(-1), axis=0) != 0:
+            self.rw = ( self.rw*self.cnt + rw/np.linalg.norm(rw.reshape(-1), axis=0) )/(self.cnt+1)
+        self.cnt += 1
+
+        return Acpc
 
 ### main / exploration ###
 
@@ -308,51 +322,52 @@ v1 = V1(game.get_state().screen_buffer)
 Av1 = v1.response(game.get_state().screen_buffer)
 
 ## Visual Place Cells ##
-vpc = PlaceCell(225, v1.nNeurons, eta=4, noise=0.008)
-Avpc = vpc.estimate(Av1, e=0.7)
+#vpc = PlaceCell(225, v1.nNeurons, eta=3, noise=0.010)
+vpc = PlaceCell(121, v1.nNeurons, eta=3, noise=0.010)
+Avpc = vpc.estimate(Av1, e=0.6)
 
 ## Motion Grid Cells ##
 nSteps = 5
-mgc = GCpop(90, 5, Ncpc=100, alphaC=0.0, eta=0.1)
+mgc = GCpop(90, 5, Ncpc=100, alphaC=0.03, eta=1)
 Amgc = mgc.dynamic()
 
 ## Motion Place Cells ##
-mpc = PlaceCell(225, mgc.Nneurons, eta=1.5, inFilter=0.8, noise=0.004)
-Ampc = mpc.estimate(Amgc, e=0.7)
+mpc = PlaceCell(225, mgc.Nneurons, eta=1, inFilter=0.8, noise=0.004)
+Ampc = mpc.estimate(Amgc, e=0.8)
 
 ## Conjuctive Place Cells ##
-cpc = CPC(100, vpc.nNodes, mpc.nNodes, eta=0.8, noise=0.008, alpha=0.3)
-Acpc = cpc.estimate(Avpc, Ampc, e=0.5)
+cpc = CPC(100, vpc.nNodes, mpc.nNodes, eta=0.1, noise=0.003, alpha=0.5)
+Acpc = cpc.estimate(Avpc, Ampc, e=0.6)
 
 #random.seed(897)
-for i in range(1500):
+for i in range(5000):
     if i%10 == 0:
         sys.stdout.write(str(i)+' ')
         sys.stdout.flush()
     
     vInt = random.randint(3,6)
-    v = np.array(randMove(game, True, vInt)[0]) * 13.62 / nSteps * (random.random()*0.1+0.95) # -5% ~ +5% noise
-    #randMove(game, True, vInt)
-    #v = (np.array([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]) - np.array(pos)) / nSteps
+    #v = np.array(randMove(game, True, vInt)[0]) * 13.62 / nSteps * (random.random()*0.1+0.95) # -5% ~ +5% noise
+    randMove(game, True, vInt)
+    v = (np.array([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]) - np.array(pos)) / nSteps
     pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
     
     
     ## conjuctive & recurrent ##
-    cpc.train(Avpc, Ampc, nIter=50)
-    Acpc = cpc.estimate(Avpc, Ampc, e=0.5, record=True)
+    cpc.train(Avpc, Ampc, nIter=5)
+    Acpc = cpc.estimate(Avpc, Ampc, e=0.6, record=True)
     
     ## visual pathway ##
     Av1 = v1.response(game.get_state().screen_buffer)
-    vpc.train(Av1, nIter=70)
-    Avpc = vpc.estimate(Av1, e=0.8, record=True)
+    vpc.train(Av1, nIter=5)
+    Avpc = vpc.estimate(Av1, e=0.6, record=True)
     
     ## self-motion pathway ##
     mgc.updateW(v)
     for step in range(nSteps):
         Amgc = mgc.dynamic(Acpc, True)
         traj.append(pos)
-    mpc.train(Amgc, nIter=70)
-    Ampc = mpc.estimate(Amgc, e=0.6, record=True)
+    mpc.train(Amgc, nIter=5)
+    Ampc = mpc.estimate(Amgc, e=0.8, record=True)
     
     
 
@@ -366,7 +381,8 @@ plot_receptive_field(mgc.data.T, np.array(traj), plot_size=[30,15], bin_length=i
 plot_receptive_field(mpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="mpc")
 
 # show the weight matrix
-mapSize = [15,15]
+#mapSize = [15,15]
+mapSize = [11,11]
 fig = plt.figure(figsize = [15, 15]);
 for pcIdx in np.arange(mapSize[0]*mapSize[1]):
     plt.subplot(mapSize[0], mapSize[1], pcIdx + 1);
@@ -375,13 +391,16 @@ for pcIdx in np.arange(mapSize[0]*mapSize[1]):
 fig.savefig(fpath+"weight.png")
 
 # estimation
-plot_receptive_field(vpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="vpc")
+#plot_receptive_field(vpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="vpc")
+plot_receptive_field(vpc.data.T, traj2, plot_size=[11,11], bin_length=int(traj2.shape[0]/15), fig_size=[11,11], fname="vpc")
 
-print("cpc data shape: ", cpc.obj.data.shape, traj2.shape)
-skip=200
+skip=1000
 plot_receptive_field(cpc.obj.data[skip:,:].T, traj2[skip:,:], plot_size=[10,10], bin_length=int(traj2[skip:,:].shape[0]/15), fig_size=[10,10], fname="cpc")
 
-
+# Hopfield
+fig = plt.figure()
+plt.imshow(cpc.rw)
+fig.savefig(fpath+"rw.png")
 
 # save data into .mat file
 #n=4

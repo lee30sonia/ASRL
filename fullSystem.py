@@ -54,7 +54,7 @@ def compute_receptive_field(act, x, y, bin_size):
         receptive_fields[neuron_idx] = ratemap;
     return receptive_fields;
 
-fpath="exp/"
+fpath="exp-uni/"
 def plot_receptive_field(activity, traj, plot_size=[1,1], bin_length=50, fig_size=[10,10], fname="untitled"):
     ratemaps = compute_receptive_field(activity, traj[:, 0], traj[:, 1], [int(traj[:, 0].size/bin_length), int(traj[:, 1].size/bin_length)]);
     num_neuron = ratemaps.shape[0];
@@ -153,7 +153,7 @@ class GCSheet:
         tau = 0.8
         B = np.matmul(self.w, self.A.T)
         if Acpc is not None:
-            self.A = (1-self.alphaC) * np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None) + self.alphaC * np.dot(Acpc, self.Wcpc).reshape((-1))
+            self.A = (1-self.alphaC) * np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None) + self.alphaC * np.dot(Acpc, self.Wcpc).reshape((-1)) / self.Wcpc.shape[0] # normalize by Ncpc
         else:
             self.A = np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None)
         
@@ -270,14 +270,14 @@ class GoalCell:
         self.data = []
     
     def response(self, PCact, record=False):
-        res = np.dot(self.w, PCact)
+        res = np.dot(self.w, PCact.reshape((-1)))
         if record:
             self.data.append(res)
         return res
         
     def memorizeReward(self, rat, tRange = 50, decay = 0.8):
         # synapses from currently firing place cells are enhanced
-        ripple = rat.Acpc/np.linalg.norm(rat.Acpc, axis=0)
+        ripple = rat.Acpc.reshape((-1))/np.linalg.norm(rat.Acpc, axis=1)
         self.w += ripple
         for t in range(tRange):
             ripple = rat.triggeredResponse(ripple).reshape(-1)
@@ -316,11 +316,11 @@ class System:
         self.Av1 = self.v1.response(initState)
         
         ## Visual Place Cells ##
-        self.vpc = PlaceCell(225, self.v1.nNeurons, eta=4, noise=0.008)
+        self.vpc = PlaceCell(225, self.v1.nNeurons, eta=5, noise=0.008)
         self.Avpc = self.vpc.estimate(self.Av1, e=0.7)
         
         ## Motion Grid Cells ##
-        self.mgc = GCpop(90, 5, Ncpc=Ncpc, alphaC=0.3, eta=0.1)
+        self.mgc = GCpop(90, 5, Ncpc=Ncpc, alphaC=0.03, eta=0.1)
         self.Amgc = self.mgc.dynamic()
         
         ## Motion Place Cells ##
@@ -328,8 +328,8 @@ class System:
         self.Ampc = self.mpc.estimate(self.Amgc, e=0.7)
         
         ## Conjuctive Place Cells ##
-        self.cpc = CPC(Ncpc, self.vpc.nNodes, self.mpc.nNodes, eta=0.8, noise=0.008, alpha=0.3)
-        self.Acpc = self.cpc.estimate(self.Avpc, self.Ampc, e=0.8, record=True)
+        self.cpc = CPC(Ncpc, self.vpc.nNodes, self.mpc.nNodes, eta=0.8, noise=0.008, alpha=0.5)
+        self.Acpc = self.cpc.estimate(self.Avpc, self.Ampc, e=0.5)
         self.rw = np.zeros([Ncpc, Ncpc]) # recurrent weights
         self.cnt = 0
 
@@ -342,7 +342,8 @@ class System:
         rw = np.matmul(self.Acpc.reshape((1, -1)).T, self.Acpc.reshape((1, -1)))
         mask = np.ones((n, n)) - np.identity(n)
         rw = rw*mask
-        self.rw = ( self.rw*self.cnt + rw/np.linalg.norm(rw.reshape(-1), axis=0) )/(self.cnt+1)
+        if np.linalg.norm(rw.reshape(-1), axis=0) != 0:
+            self.rw = ( self.rw*self.cnt + rw/np.linalg.norm(rw.reshape(-1), axis=0) )/(self.cnt+1)
         self.cnt += 1
         
     def showRW(self):
@@ -358,7 +359,7 @@ class System:
         ## conjuctive & recurrent ##
         if training:
             self.cpc.train(self.Avpc, self.Ampc, nIter=50)
-        self.Acpc = self.cpc.estimate(self.Avpc, self.Ampc, e=0.5, record=True)
+        self.Acpc = self.cpc.estimate(self.Avpc, self.Ampc, e=0.3, record=True)
         if trainHop:
             self.trainHopfield()
         
@@ -374,7 +375,7 @@ class System:
             self.Amgc = self.mgc.dynamic(self.Acpc, True)
         if training:
             self.mpc.train(self.Amgc, nIter=70)
-        self.Ampc = self.mpc.estimate(self.Amgc, e=0.8, record=True)
+        self.Ampc = self.mpc.estimate(self.Amgc, e=0.6, record=True)
 
 
 
@@ -456,6 +457,7 @@ def exploitation(game, rat, rewardPos, tolerance, nMoves=100, trial=""):
     # random initial position
     pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
     traj = [pos]
+    Agc = rat.gc.response(rat.Acpc, record=True) 
     
     speed = 1
     p = 0.01
@@ -469,16 +471,16 @@ def exploitation(game, rat, rewardPos, tolerance, nMoves=100, trial=""):
     
     for i in range(nMoves):
         ori_pos = pos
-    
-        if rat.Agc < threshold_high or len(rat.gc.data) < 3:
-            if rat.Agc < threshold_low:
+        Agc = rat.gc.response(rat.Acpc, record=True) 
+        if Agc < threshold_high or len(rat.gc.data) < 3:
+            if Agc < threshold_low:
                 #sys.stdout.write("fast ")
                 speed = 5
             else:
                 #sys.stdout.write("medium ")
                 speed = 3
             
-            if rat.gc.data[-2] < rat.Agc: # current position is better than the last; i.e. direction is good
+            if rat.gc.data[-2] < Agc: # current position is better than the last; i.e. direction is good
                 #sys.stdout.write("following gradient ")
                 v = move(game, direction, speed)
                 rat.makeAction(game, v, training=False)
@@ -493,7 +495,7 @@ def exploitation(game, rat, rewardPos, tolerance, nMoves=100, trial=""):
             #sys.stdout.write("slow ")
             speed = 1
         
-            if rat.gc.data[-2] < rat.Agc or rat.gc.data[-3] < rat.Agc: # current position is better than the last; i.e. direction is good
+            if rat.gc.data[-2] < Agc or rat.gc.data[-3] < Agc: # current position is better than the last; i.e. direction is good
                 #sys.stdout.write("following gradient ")
                 v = move(game, direction, speed)
                 rat.makeAction(game, v, training=False)
@@ -531,6 +533,7 @@ def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
     # initial position & responses
     pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
     traj = [pos]
+    Agc = rat.gc.response(rat.Acpc, record=True) 
     
     speed = 1
     p = np.exp(-rat.gc.gc_max) # possibility to random walk
@@ -544,12 +547,13 @@ def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
     
     while not rewarded:
         ori_pos = pos
+        Agc = rat.gc.response(rat.Acpc, record=True) 
         
         if random.random() < p:
             v, direction = randMove(game, avoidWall=True, speed=random.randint(3,6))
         else:
-            if rat.Agc < threshold_high or len(rat.gc.data) < 3:
-                if rat.Agc < threshold_low:
+            if Agc < threshold_high or len(rat.gc.data) < 3:
+                if Agc < threshold_low:
                     #sys.stdout.write("fast ")
                     speed = 5
                 else:
@@ -558,7 +562,7 @@ def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
                 
                 ##### far away -- random walk or follow gradient? #####
                 
-                if rat.gc.data[-2] < rat.Agc: # current position is better than the last; i.e. direction is good
+                if rat.gc.data[-2] < Agc: # current position is better than the last; i.e. direction is good
                     #sys.stdout.write("following gradient ")
                     v = move(game, direction, speed)
                     rat.makeAction(game, v, training=False)
@@ -573,7 +577,7 @@ def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
                 #sys.stdout.write("slow ")
                 speed = 1
             
-                if rat.gc.data[-2] < rat.Agc or rat.gc.data[-3] < rat.Agc: # current position is better than the last; i.e. direction is good
+                if rat.gc.data[-2] < Agc or rat.gc.data[-3] < Agc: # current position is better than the last; i.e. direction is good
                     #sys.stdout.write("following gradient ")
                     v = move(game, direction, speed)
                     rat.makeAction(game, v, training=False)
@@ -586,7 +590,7 @@ def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
         
         pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
         traj.append(pos)
-        #print(ori_pos, rat.Agc, p)
+        #print(ori_pos, Agc, p)
         
         if pos[0]>rewardPos[0]-tolerance and pos[0]<rewardPos[0]+tolerance and pos[1]>rewardPos[1]-tolerance and pos[1]<rewardPos[1]+tolerance: 
             print("reward!", len(traj))
@@ -653,8 +657,8 @@ for exp in range(nExps):
     for trial in range(nTrails):
         initPos(game, rat)
         #sim_gc(gc, MPCpop, [[50, 150], [50, 150]], 1000, bin_length=40) #[[50, 150], [50, 150]]
-        ratGo(game, rat, rewardPos, tolerance, str(exp+1)+"_"+str(trial+1))
-        #unifiedStrategy(game, rat, rewardPos, tolerance, str(exp+1)+"_"+str(trial+1))
+        #ratGo(game, rat, rewardPos, tolerance, str(exp+1)+"_"+str(trial+1))
+        unifiedStrategy(game, rat, rewardPos, tolerance, str(exp+1)+"_"+str(trial+1))
         
 game.close()
 
