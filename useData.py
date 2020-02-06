@@ -307,13 +307,14 @@ class GoalCell:
         # synapses from currently firing place cells are enhanced
         ripple = rat.Acpc.reshape((-1))/np.linalg.norm(rat.Acpc, axis=1)
         #print(np.amax(ripple))
-        self.w += ripple
+        self.w += ripple*2
         for t in range(tRange):
             ripple = rat.triggeredResponse(ripple).reshape(-1)
             ripple /= np.linalg.norm(ripple, axis=0)
             #print(np.amax(ripple))
             self.w +=  ripple * (decay**(t+1))
         self.w /= np.linalg.norm(self.w, axis=0)
+        self.w /= self.response(rat.Acpc)/2
         self.gc_max = self.response(rat.Acpc)
     
     def forget(self, factor=1000):
@@ -371,7 +372,7 @@ class System:
         n = self.Acpc.shape[1]
         rw = np.matmul(self.Acpc.T, self.Acpc)
         mask = np.ones((n, n)) - np.identity(n)
-        rw = rw*mask
+        #rw = rw*mask
         if np.linalg.norm(rw.reshape(-1), axis=0) != 0:
             self.rw = ( self.rw*self.cnt + rw/np.linalg.norm(rw.reshape(-1), axis=0) )/(self.cnt+1)
             self.cnt += 1
@@ -479,8 +480,7 @@ def search(game, rat, rewardPos, tolerance):
     while not rewarded:
         if pos[0]>rewardPos[0]-tolerance and pos[0]<rewardPos[0]+tolerance and pos[1]>rewardPos[1]-tolerance and pos[1]<rewardPos[1]+tolerance: 
             print("reward! (random search)", pos)
-            rat.gc.memorizeReward(rat, tRange=1, decay=0.95)
-            rat.gc.memorizeReward(rat, tRange=1, decay=0.95)
+            rat.gc.memorizeReward(rat, tRange=10, decay=0.9)
             #rat.gc.memorizeReward(rat, tRange=5, decay=0.1)
             break
         v, direction = randMove(game, True, random.randint(3,6))
@@ -574,7 +574,7 @@ def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
     Agc = rat.gc.response(rat.Acpc, record=True) 
     
     speed = 1
-    p = np.exp(-rat.gc.gc_max) # possibility to random walk
+    p = np.exp(-rat.gc.gc_max/2) # possibility to random walk
     threshold_low = rat.gc.gc_max*0.6 #0.7
     threshold_high = rat.gc.gc_max*0.7 #0.95
     
@@ -589,7 +589,9 @@ def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
         
         if random.random() < p:
             v, direction = randMove(game, avoidWall=True, speed=random.randint(3,6))
+            sys.stdout.write("r ")
         else:
+            sys.stdout.write("g ")
             if Agc < threshold_high or len(rat.gc.data) < 3:
                 if Agc < threshold_low:
                     #sys.stdout.write("fast ")
@@ -633,16 +635,16 @@ def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
         if pos[0]>rewardPos[0]-tolerance and pos[0]<rewardPos[0]+tolerance and pos[1]>rewardPos[1]-tolerance and pos[1]<rewardPos[1]+tolerance: 
             print("reward!", len(traj))
             rewarded = True
-            #rat.gc.memorizeReward(rat, tRange=3, decay=0.1)
-            rat.gc.memorizeReward(rat, tRange=3, decay=0.95)
+            rat.gc.memorizeReward(rat, tRange=10, decay=0.9)
+            #rat.gc.memorizeReward(rat, tRange=5, decay=0.1)
             break
         else:
             rat.gc.forget(1.01) # gradually forget
-            p = np.exp(-rat.gc.gc_max)
+            p = np.exp(-rat.gc.gc_max/2)
             threshold_low = rat.gc.gc_max*0.6
             threshold_high = rat.gc.gc_max*0.7
         
-        if len(traj) > 2000:
+        if len(traj) > 1000:
             print("fail!")
             break
     plot_traj(np.array(traj), fname="unified"+trial)
@@ -664,32 +666,34 @@ pos = [0,0]
 traj2 = []
 
 rat = System(lookAround(game), nSteps=5)
-data = sio.loadmat('data.mat', appendmat=False)
+data = sio.loadmat('data-rw.mat', appendmat=False)
 rat.vpc.w = data['vpc']
 rat.mpc.w = data['mpc']
 rat.cpc.obj.w = data['cpc']
-#rat.rw = data['rw']
+rat.rw = data['rw']
 for i in range(5):
     rat.mgc.sheets[i].alpha = data['mgc'][i][0]
     rat.mgc.sheets[i].beta = data['mgc'][i][1]
     rat.mgc.sheets[i].A = data['mgc'][i][2].reshape((-1))
     rat.mgc.sheets[i].Wcpc = data['mgc'][i][3]
     
-
 # experiments
 nExps = 3 # number of changing reward position
 nTrails = 3 # number of testing of the same reward position
-tolerance = 15
+tolerance = 30
 env_range = [[-130, 130], [-130, 130]]
  
 traj2 = []
-for i in range(1000):
+for i in range(0):
     if i%10 == 0:
         sys.stdout.write(str(i)+' ')
         sys.stdout.flush()
     v, direction = randMove(game, True, random.randint(3,6))
     rat.makeAction(game, v, training=False, trainHop=True, recording=True)
     traj2.append([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)])
+
+#simData = {'vpc': data['vpc'], 'mpc': data['mpc'], 'cpc': data['cpc'], 'rw': rat.rw, 'mgc': data['mgc'] }
+#sio.savemat('data-rw.mat', simData, appendmat=False)
 
 search(game, rat, [0,0], 10)
 rat.gc.data = []
@@ -699,7 +703,7 @@ for i in range(1000):
         sys.stdout.write(str(i)+' ')
         sys.stdout.flush()
     v, direction = randMove(game, True, random.randint(3,6))
-    rat.makeAction(game, v, training=False, recording=True)
+    rat.makeAction(game, v, training=False, trainHop=False, recording=True)
     rat.gc.response(rat.Acpc, record=True) 
     traj3.append([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)])
     traj2.append([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)])
@@ -708,12 +712,14 @@ plot_receptive_field(np.array([rat.gc.data]), np.array(traj3), plot_size=[1,1], 
 plot_traj(np.array(traj3), fname="goal_sim")
 
 traj2=np.array(traj2)
-plot_receptive_field(rat.mpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="mpc")
-plot_receptive_field(rat.vpc.data.T, traj2, plot_size=[11,11], bin_length=int(traj2.shape[0]/15), fig_size=[11,11], fname="vpc")
-plot_receptive_field(rat.cpc.obj.data.T, traj2, plot_size=[14,14], bin_length=int(traj2.shape[0]/15), fig_size=[14,14], fname="cpc")
-plot_receptive_field(rat.mgc.data.T, np.array([[a,a,a,a,a] for a in traj2]).reshape((-1, 2)), plot_size=[30,15], bin_length=int(traj2.shape[0]*5/15), fig_size=[15,30], fname="mgc")
+#plot_receptive_field(rat.mpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="mpc")
+#plot_receptive_field(rat.vpc.data.T, traj2, plot_size=[11,11], bin_length=int(traj2.shape[0]/15), fig_size=[11,11], fname="vpc")
+#plot_receptive_field(rat.cpc.obj.data.T, traj2, plot_size=[14,14], bin_length=int(traj2.shape[0]/15), fig_size=[14,14], fname="cpc")
+#plot_receptive_field(rat.mgc.data.T, np.array([[a,a,a,a,a] for a in traj2]).reshape((-1, 2)), plot_size=[30,15], bin_length=int(traj2.shape[0]*5/15), fig_size=[15,30], fname="mgc")
+rat.showRW()
 
-
+rat.gc.w = np.zeros(rat.gc.nPC)
+rat.gc.gc_max = 0
 for exp in range(nExps):
     rewardPos = [random.random() * (env_range[0][1]-env_range[0][0]) + env_range[0][0], random.random() * (env_range[1][1]-env_range[1][0]) + env_range[1][0]]
     print("new reward position:", rewardPos)
