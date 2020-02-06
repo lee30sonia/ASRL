@@ -8,6 +8,7 @@ from scipy.ndimage.interpolation import shift
 import sys
 import math
 import scipy.io as sio
+noisy = False
 
 def create_environment():
     game = DoomGame()
@@ -25,32 +26,6 @@ def create_environment():
     game.init()     
     return game
 
-### moving functions ###
-def move(game, action, speed=1):
-    game.make_action(action, speed)
-    v = [game.get_game_variable(VELOCITY_X), game.get_game_variable(VELOCITY_Y)]
-    game.make_action([0]*game.get_available_buttons_size(), 50)
-    return v
-
-def randMove(game, avoidWall=False, speed=1):
-    actions = np.identity(game.get_available_buttons_size(), dtype = int)
-    mask = np.ones(game.get_available_buttons_size(), dtype=bool)
-    if mask.size > 4:
-        mask[4] = False # TURN_RIGHT
-    if avoidWall:
-        pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
-        if pos[0] > 150:
-            mask[2] = False # inhibit MOVE_FORWARD
-        if pos[0] < -150:
-            mask[3] = False # inhibit MOVE_BACKWARD
-        if pos[1] > 150:
-            mask[0] = False # inhibit MOVE_LEFT
-        if pos[1] < -150:
-            mask[1] = False # inhibit MOVE_RIGHT
-    actions = actions[mask].tolist()
-    action = random.choice(actions)
-    return move(game, action, speed), action
-
 def turn90(game):
     deg = round((game.get_game_variable(ANGLE) - 90)/90)*90
     if deg < 0:
@@ -59,7 +34,7 @@ def turn90(game):
     while game.get_game_variable(ANGLE) > deg+1:
         game.make_action([0, 0, 0, 0, 1], int(math.ceil((game.get_game_variable(ANGLE) - deg)/10)))
     #print(game.get_game_variable(ANGLE))
-        
+
 def lookAround(game):
     vision = game.get_state().screen_buffer
     turn90(game)
@@ -102,33 +77,31 @@ def compute_receptive_field(act, x, y, bin_size):
         receptive_fields[neuron_idx] = ratemap;
     return receptive_fields;
 
-fpath="no-noise/"
+if noisy:
+    fpath="exp-noisy/"
+else:
+    fpath="exp/"
 def plot_receptive_field(activity, traj, plot_size=[1,1], bin_length=50, fig_size=[10,10], fname="untitled"):
     ratemaps = compute_receptive_field(activity, traj[:, 0], traj[:, 1], [int(traj[:, 0].size/bin_length), int(traj[:, 1].size/bin_length)]);
+    simData = {'r': ratemaps}
+    sio.savemat(fpath+fname+'.mat', simData, appendmat=False)
     num_neuron = ratemaps.shape[0];
     fig = plt.figure(figsize=fig_size);
-    #plt.axis('off');
     for neuron_idx in range(plot_size[0]*plot_size[1]):
         plt.subplot(plot_size[0], plot_size[1], neuron_idx + 1);
         plt.imshow(np.flipud(ratemaps[neuron_idx]), interpolation = 'gaussian');
     #plt.show();
     fig.savefig(fpath+fname+".png")
 
-def plot_traj(traj, env_range=[(-200, 200), (-200, 200)]):
-    #print((np.min(traj[:, 0]), np.max(traj[:, 0])));
-    #print((np.max(traj[:, 1]), np.min(traj[:, 1])));
+def plot_traj(traj, env_range=[(-200, 200), (-200, 200)], fname="traj"):
     fig = plt.figure();
     plt.subplot(1, 1, 1);
     plt.plot(traj[:, 0], traj[:, 1], 'ko-');
     plt.xlim(env_range[0]);
     plt.ylim(env_range[1]);
-    #plt.xlim((np.min(traj[:, 0]), np.max(traj[:, 0])));
-    #plt.ylim((np.min(traj[:, 1]), np.max(traj[:, 1])));
-    #plt.axis('scaled');
-    #plt.axis('off');
     plt.title('Trajectory');
     #plt.show();
-    fig.savefig(fpath+"traj.png")
+    fig.savefig(fpath+fname+".png")
 
 
 ### primary visual cortex ###
@@ -170,7 +143,7 @@ class V1:
         filtered_state = filtered_state / np.max(filtered_state)
         filtered_state = filtered_state / np.tile(np.linalg.norm(filtered_state, axis=1).reshape((-1, 1)), (1, filtered_state.shape[1]))
         
-        self.data = np.append(self.data, filtered_state, axis=0)
+        #self.data = np.append(self.data, filtered_state, axis=0)
         return filtered_state
 
 
@@ -186,7 +159,7 @@ class GCSheet:
         
         self.poses = [[i+1, j+1] for i in range(self.Nx) for j in range(self.Ny)] #poses[n-1] = [int(n/self.Ny)+1, n%self.Ny]
         self.alpha = alpha/400 #np.random.uniform(1.0/400, 2.6/400) # smaller -> larger spacing # [1,3]
-        print(self.alpha*400)
+        #print(self.alpha*400)
         self.beta = np.random.uniform(0, np.pi/3)
         self.R = np.array([[np.cos(self.beta), -np.sin(self.beta)], [np.sin(self.beta), np.cos(self.beta)]])
         
@@ -208,8 +181,7 @@ class GCSheet:
         tau = 0.8
         B = np.matmul(self.w, self.A.T)
         if Acpc is not None:
-            self.A = (1-self.alphaC) * np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None) + self.alphaC * np.dot(Acpc, self.Wcpc).reshape((-1)) / self.Wcpc.shape[0] #normalize by Ncpc
-            #self.A = (1-self.alphaC) * np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None) + self.alphaC * np.dot(Acpc, self.Wcpc).reshape((-1)) / np.sum(Acpc) * np.sum(self.A)
+            self.A = (1-self.alphaC) * np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None) + self.alphaC * np.dot(Acpc, self.Wcpc).reshape((-1)) / self.Wcpc.shape[0] # normalize by Ncpc
         else:
             self.A = np.clip((1-tau)*B + tau*B/np.sum(self.A), 0, None)
         
@@ -309,26 +281,378 @@ class CPC:
     def __init__(self, N, nVPC, nMPC, eta=1, noise=0.003, alpha=0.3, inFilter=1):
         self.alpha = alpha
         self.obj = PlaceCell(N, nVPC+nMPC, eta=eta, noise=noise, inFilter=inFilter)
-        self.cnt = 0
-        self.rw = np.zeros([N,N])
 
     def train(self, actV, actM, nIter=1):
         self.obj.train(np.concatenate((self.alpha*actV, (1-self.alpha)*actM), axis=1), nIter)
                  
     def estimate(self, actV, actM, e=0.0, record=False):
-        Acpc = self.obj.estimate(np.concatenate((self.alpha*actV, (1-self.alpha)*actM), axis=1), e=e, record=record)
+        return self.obj.estimate(np.concatenate((self.alpha*actV, (1-self.alpha)*actM), axis=1), e=e, record=record)
+
+
+### goal cell ###
+class GoalCell:
+    def __init__(self, nPC):
+        self.nPC = nPC # number of place cells
+        self.w = np.zeros(nPC)
+        self.gc_max = 0
+        self.data = []
     
-        # trainHopfield
-        n = Acpc.shape[0]
-        rw = np.matmul(Acpc.T, Acpc)
+    def response(self, PCact, record=False):
+        res = np.dot(self.w, PCact.reshape((-1)))
+        if record:
+            self.data.append(res)
+        return res
+        
+    def memorizeReward(self, rat, tRange = 50, decay = 0.8):
+        # synapses from currently firing place cells are enhanced
+        ripple = rat.Acpc.reshape((-1))/np.linalg.norm(rat.Acpc, axis=1)
+        #print(np.amax(ripple))
+        self.w += ripple
+        for t in range(tRange):
+            ripple = rat.triggeredResponse(ripple).reshape(-1)
+            ripple /= np.linalg.norm(ripple, axis=0)
+            #print(np.amax(ripple))
+            self.w +=  ripple * (decay**(t+1))
+        self.w /= np.linalg.norm(self.w, axis=0)
+        self.gc_max = self.response(rat.Acpc)
+    
+    def forget(self, factor=1000):
+        self.w /= factor
+        self.gc_max /= factor
+        
+#def sim_gc(gc, PCpop, env_range, n, plot=True, bin_length=50, fig_size=[5,5]):
+#    def f(pos):
+#        return gc.response([pc.response(pos, False) for pc in PCpop.MPCs], False)
+#    return simulate_plot([f], env_range, n, plot, bin_length, fig_size)
+#
+#def simulate_plot(funcs, env_range, n, plot=True, bin_length=50, fig_size=[15,15]):
+#    traj_x = np.random.rand(n) * (env_range[0][1]-env_range[0][0]) + np.ones((n)) * env_range[0][0]
+#    traj_y = np.random.rand(n) * (env_range[1][1]-env_range[1][0]) + np.ones((n)) * env_range[1][0]
+#    traj = np.array([traj_x, traj_y]).T
+#    
+#    activity = np.array([[func(pos) for pos in traj] for func in funcs])
+#    if plot:
+#        plot_receptive_field(activity, traj, plot_size=[int(len(funcs)**0.5), int(len(funcs)**0.5)], bin_length=bin_length, fig_size=fig_size)
+#    return traj, activity
+
+
+### Wrapper for the whole system ###
+
+class System:
+    def __init__(self, initState, nSteps=5, Ncpc=196):
+        self.nSteps = nSteps
+        ## V1 ##
+        self.v1 = V1(initState)
+        self.Av1 = self.v1.response(initState)
+        
+        ## Visual Place Cells ##
+        self.vpc = PlaceCell(121, self.v1.nNeurons, inFilter=0.8, eta=20, noise=0.005)
+        self.Avpc = self.vpc.estimate(self.Av1, e=0.9)
+        
+        ## Motion Grid Cells ##
+        self.mgc = GCpop(90, 5, Ncpc=Ncpc, alphaC=0.10, eta=50)
+        self.Amgc = self.mgc.dynamic()
+        
+        ## Motion Place Cells ##
+        self.mpc = PlaceCell(225, self.mgc.Nneurons, eta=1, inFilter=0.8, noise=0.004)
+        self.Ampc = self.mpc.estimate(self.Amgc, e=0.8)
+        
+        ## Conjuctive Place Cells ##
+        self.cpc = CPC(Ncpc, self.vpc.nNodes, self.mpc.nNodes, eta=50, noise=0.005, alpha=0.5)
+        self.Acpc = self.cpc.estimate(self.Avpc, self.Ampc, e=0.2)
+        self.rw = np.zeros([Ncpc, Ncpc]) # recurrent weights
+        self.cnt = 0
+
+        ## Goal Cell ##
+        self.gc = GoalCell(Ncpc)
+        self.globPos = [0,0]
+
+    def trainHopfield(self):
+        n = self.Acpc.shape[1]
+        rw = np.matmul(self.Acpc.T, self.Acpc)
         mask = np.ones((n, n)) - np.identity(n)
         rw = rw*mask
         if np.linalg.norm(rw.reshape(-1), axis=0) != 0:
             self.rw = ( self.rw*self.cnt + rw/np.linalg.norm(rw.reshape(-1), axis=0) )/(self.cnt+1)
             self.cnt += 1
-        return Acpc
+        
+    def showRW(self):
+        fig = plt.figure();
+        plt.imshow(self.rw);
+        #plt.show();
+        fig.savefig(fpath+"rw.png")
+    
+    def triggeredResponse(self, Acpc):
+        return np.matmul(Acpc.reshape((1, -1)), self.rw)
 
-### main / exploration ###
+    def makeAction(self, game, v, training=False, trainHop=False, recording=False):
+        if noisy:
+            v = np.array(v)*13.62/self.nSteps
+        else:
+            v = (np.array([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]) - np.array(self.globPos)) / self.nSteps
+            self.globPos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
+        ## conjuctive & recurrent ##
+        if training:
+            self.cpc.train(self.Avpc, self.Ampc, nIter=10)
+        self.Acpc = self.cpc.estimate(self.Avpc, self.Ampc, e=0.2, record=recording)
+        if trainHop:
+            self.trainHopfield()
+        
+        ## visual pathway ##
+        #self.Av1 = self.v1.response(game.get_state().screen_buffer)
+        self.Av1 = self.v1.response(lookAround(game))
+        if training:
+            self.vpc.train(self.Av1, nIter=20)
+        self.Avpc = self.vpc.estimate(self.Av1, e=0.9, record=recording)
+        
+        ## self-motion pathway ##
+        self.mgc.updateW(v)
+        for step in range(self.nSteps):
+            self.Amgc = self.mgc.dynamic(self.Acpc, record=recording)
+        if training:
+            self.mpc.train(self.Amgc, nIter=5)
+        self.Ampc = self.mpc.estimate(self.Amgc, e=0.8, record=recording)
+
+
+
+### moving functions ###
+
+def move(game, action, speed=1):
+    game.make_action(action, speed)
+    v = [game.get_game_variable(VELOCITY_X), game.get_game_variable(VELOCITY_Y)]
+    game.make_action([0]*game.get_available_buttons_size(), 50)
+    return v
+
+def randMove(game, avoidWall=False, speed=1):
+    actions = np.identity(game.get_available_buttons_size(), dtype = int)
+    mask = np.ones(game.get_available_buttons_size(), dtype=bool)
+    if mask.size > 4:
+        mask[4] = False # TURN_RIGHT
+    if avoidWall:
+        pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
+        if pos[0] > 150:
+            mask[2] = False # inhibit MOVE_FORWARD
+        if pos[0] < -150:
+            mask[3] = False # inhibit MOVE_BACKWARD
+        if pos[1] > 150:
+            mask[0] = False # inhibit MOVE_LEFT
+        if pos[1] < -150:
+            mask[1] = False # inhibit MOVE_RIGHT
+    actions = actions[mask].tolist()
+    action = random.choice(actions)
+    return move(game, action, speed), action
+
+def go_back_turn(game, ori_dir, speed=1):
+    actions = np.identity(game.get_available_buttons_size(), dtype = int)
+    if actions.size > 4:
+        actions = np.delete(actions, 4, axis=0) #TURN_RIGHT
+    opposite = ori_dir
+    
+    if ori_dir[0]:
+        opposite[0] = 0
+        opposite[1] = 1
+        actions = np.delete(actions, 0, axis=0)
+    elif ori_dir[1]:
+        opposite[0] = 1
+        opposite[1] = 0
+        actions = np.delete(actions, 1, axis=0)
+    elif ori_dir[2]:
+        opposite[2] = 0
+        opposite[3] = 1
+        actions = np.delete(actions, 2, axis=0)
+    elif ori_dir[3]:
+        opposite[2] = 1
+        opposite[3] = 0
+        actions = np.delete(actions, 3, axis=0)
+    
+    return move(game, opposite, speed), random.choice(actions.tolist())
+
+def initPos(game, rat):
+    # go to another initial position
+    for i in range(100):
+        v, direction = randMove(game, True, 6)
+        rat.makeAction(game, v, training=False)
+    
+def search(game, rat, rewardPos, tolerance):
+    rewarded = False
+    pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
+    while not rewarded:
+        if pos[0]>rewardPos[0]-tolerance and pos[0]<rewardPos[0]+tolerance and pos[1]>rewardPos[1]-tolerance and pos[1]<rewardPos[1]+tolerance: 
+            print("reward! (random search)", pos)
+            rat.gc.memorizeReward(rat, tRange=1, decay=0.95)
+            rat.gc.memorizeReward(rat, tRange=1, decay=0.95)
+            #rat.gc.memorizeReward(rat, tRange=5, decay=0.1)
+            break
+        v, direction = randMove(game, True, random.randint(3,6))
+        pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
+        rat.makeAction(game, v, training=False)
+
+
+### explicit strategy ###
+    
+def exploitation(game, rat, rewardPos, tolerance, nMoves=100, trial=""):
+    rewarded = False
+    # random initial position
+    pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
+    traj = [pos]
+    Agc = rat.gc.response(rat.Acpc, record=True) 
+    
+    speed = 1
+    p = 0.01
+    threshold_low = rat.gc.gc_max*0.7
+    threshold_high = rat.gc.gc_max*0.95
+    #print(threshold_low, threshold_high)
+    v, direction = randMove(game, True) # randomly decide a direction
+    pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
+    rat.makeAction(game, v, training=False)
+    traj.append(pos)
+    
+    for i in range(nMoves):
+        ori_pos = pos
+        Agc = rat.gc.response(rat.Acpc, record=True) 
+        if Agc < threshold_high or len(rat.gc.data) < 3:
+            if Agc < threshold_low:
+                #sys.stdout.write("fast ")
+                speed = 5
+            else:
+                #sys.stdout.write("medium ")
+                speed = 3
+            
+            if rat.gc.data[-2] < Agc: # current position is better than the last; i.e. direction is good
+                #sys.stdout.write("following gradient ")
+                v = move(game, direction, speed)
+                rat.makeAction(game, v, training=False)
+            else:
+                #sys.stdout.write("going back and turn ")
+                v, direction = go_back_turn(game, direction, speed)
+                rat.makeAction(game, v, training=False)
+                v = move(game, direction, speed)
+                rat.makeAction(game, v, training=False)
+        
+        else:
+            #sys.stdout.write("slow ")
+            speed = 1
+        
+            if rat.gc.data[-2] < Agc or rat.gc.data[-3] < Agc: # current position is better than the last; i.e. direction is good
+                #sys.stdout.write("following gradient ")
+                v = move(game, direction, speed)
+                rat.makeAction(game, v, training=False)
+            else:
+                #sys.stdout.write("going back and turn ")
+                v, direction = go_back_turn(game, direction, speed)
+                rat.makeAction(game, v, training=False)
+                v = move(game, direction, speed)
+                rat.makeAction(game, v, training=False)
+        
+        pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
+        traj.append(pos)
+        #print(ori_pos, gc_activity)
+        
+        if pos[0]>rewardPos[0]-tolerance and pos[0]<rewardPos[0]+tolerance and pos[1]>rewardPos[1]-tolerance and pos[1]<rewardPos[1]+tolerance: 
+            print("reward!", i)
+            rewarded = True
+            break
+    if not rewarded:
+        print("fail!")
+    plot_traj(np.array(traj), fname="exploit"+trial)
+    return rewarded
+
+def ratGo(game, rat, rewardPos, tolerance, trial=""):
+    if not exploitation(game, rat, rewardPos, tolerance, nMoves=100, trial=trial):
+        # if failed to find the reward in nMoves, the rat believes the reward position has changed
+        print("forget and search...")
+        rat.gc.forget()
+        search(game, rat, rewardPos, tolerance/1.5)
+
+### unified strategy ###
+def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
+    rewarded = False
+    rat.gc.data = []
+    # initial position & responses
+    pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
+    traj = [pos]
+    Agc = rat.gc.response(rat.Acpc, record=True) 
+    
+    speed = 1
+    p = np.exp(-rat.gc.gc_max) # possibility to random walk
+    threshold_low = rat.gc.gc_max*0.6 #0.7
+    threshold_high = rat.gc.gc_max*0.7 #0.95
+    
+    v, direction = randMove(game, True) # randomly decide a direction
+    pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
+    rat.makeAction(game, v, training=False)
+    traj.append(pos)
+    
+    while not rewarded:
+        ori_pos = pos
+        Agc = rat.gc.response(rat.Acpc, record=True) 
+        
+        if random.random() < p:
+            v, direction = randMove(game, avoidWall=True, speed=random.randint(3,6))
+        else:
+            if Agc < threshold_high or len(rat.gc.data) < 3:
+                if Agc < threshold_low:
+                    #sys.stdout.write("fast ")
+                    speed = 5
+                else:
+                    #sys.stdout.write("medium ")
+                    speed = 3
+                
+                ##### far away -- random walk or follow gradient? #####
+                
+                if rat.gc.data[-2] < Agc: # current position is better than the last; i.e. direction is good
+                    #sys.stdout.write("following gradient ")
+                    v = move(game, direction, speed)
+                    rat.makeAction(game, v, training=False)
+                else:
+                    #sys.stdout.write("going back and turn ")
+                    v, direction = go_back_turn(game, direction, speed)
+                    rat.makeAction(game, v, training=False)
+                    v = move(game, direction, speed)
+                    rat.makeAction(game, v, training=False)
+            
+            else:
+                #sys.stdout.write("slow ")
+                speed = 1
+            
+                if rat.gc.data[-2] < Agc or rat.gc.data[-3] < Agc: # current position is better than the last; i.e. direction is good
+                    #sys.stdout.write("following gradient ")
+                    v = move(game, direction, speed)
+                    rat.makeAction(game, v, training=False)
+                else:
+                    #sys.stdout.write("going back and turn ")
+                    v, direction = go_back_turn(game, direction, speed)
+                    rat.makeAction(game, v, training=False)
+                    v = move(game, direction, speed)
+                    rat.makeAction(game, v, training=False)
+        
+        pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
+        traj.append(pos)
+        #print(ori_pos, Agc, p)
+        
+        if pos[0]>rewardPos[0]-tolerance and pos[0]<rewardPos[0]+tolerance and pos[1]>rewardPos[1]-tolerance and pos[1]<rewardPos[1]+tolerance: 
+            print("reward!", len(traj))
+            rewarded = True
+            #rat.gc.memorizeReward(rat, tRange=3, decay=0.1)
+            rat.gc.memorizeReward(rat, tRange=3, decay=0.95)
+            break
+        else:
+            rat.gc.forget(1.01) # gradually forget
+            p = np.exp(-rat.gc.gc_max)
+            threshold_low = rat.gc.gc_max*0.6
+            threshold_high = rat.gc.gc_max*0.7
+        
+        if len(traj) > 2000:
+            print("fail!")
+            break
+    plot_traj(np.array(traj), fname="unified"+trial)
+
+
+
+
+
+
+### main ###
 
 game = create_environment()
 game.new_episode()
@@ -336,77 +660,75 @@ game.make_action([0, 0, 0, 0, 1], 10)
 game.make_action([0, 0, 0, 0, 0], 100)
 
 pos = [0,0]
-traj = []
-env_range = [[-190, 190], [-190, 190]]
+#env_range = [[-190, 190], [-190, 190]]
+traj2 = []
 
-## V1 ##
-#v1 = V1(game.get_state().screen_buffer)
-#Av1 = v1.response(game.get_state().screen_buffer)
-vis = lookAround(game)
-v1 = V1(vis)
-Av1 = v1.response(vis)
-
-game.close()
-
-## Visual Place Cells ##
-#vpc = PlaceCell(225, v1.nNeurons, eta=3, noise=0.010)
-vpc = PlaceCell(121, v1.nNeurons, eta=8, noise=0.005)
-Avpc = vpc.estimate(Av1, e=0.9)
-
-## Motion Grid Cells ##
-nSteps = 5
-mgc = GCpop(90, 5, Ncpc=196, alphaC=0.05, eta=1)
-Amgc = mgc.dynamic()
-
-## Motion Place Cells ##
-mpc = PlaceCell(225, mgc.Nneurons, eta=1, inFilter=0.8, noise=0.004)
-Ampc = mpc.estimate(Amgc, e=0.8)
-
-## Conjuctive Place Cells ##
-cpc = CPC(196, vpc.nNodes, mpc.nNodes, eta=15, noise=0.003, alpha=0.5)
-Acpc = cpc.estimate(Avpc, Ampc, e=0.2)
-
+rat = System(lookAround(game), nSteps=5)
 data = sio.loadmat('data.mat', appendmat=False)
-#random.seed(897)
-for i in range(5000):
+rat.vpc.w = data['vpc']
+rat.mpc.w = data['mpc']
+rat.cpc.obj.w = data['cpc']
+#rat.rw = data['rw']
+for i in range(5):
+    rat.mgc.sheets[i].alpha = data['mgc'][i][0]
+    rat.mgc.sheets[i].beta = data['mgc'][i][1]
+    rat.mgc.sheets[i].A = data['mgc'][i][2].reshape((-1))
+    rat.mgc.sheets[i].Wcpc = data['mgc'][i][3]
+    
+
+# experiments
+nExps = 3 # number of changing reward position
+nTrails = 3 # number of testing of the same reward position
+tolerance = 15
+env_range = [[-130, 130], [-130, 130]]
+ 
+traj2 = []
+for i in range(1000):
     if i%10 == 0:
         sys.stdout.write(str(i)+' ')
         sys.stdout.flush()
-    
-    ## conjuctive & recurrent ##
-    cpc.train(Avpc, Ampc, nIter=5)
-    Acpc = cpc.estimate(Avpc, Ampc, e=0.2, record=True)
-    
-    ## visual pathway ##
-    Av1 = data['Av1'][i]
-    Avpc = vpc.estimate(Av1, e=0.9, record=True)
-    
-    ## self-motion pathway ##
-    Ampc = data['Ampc'][i]
-    
-    
-traj2 = data['pos']
+    v, direction = randMove(game, True, random.randint(3,6))
+    rat.makeAction(game, v, training=False, trainHop=True, recording=True)
+    traj2.append([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)])
+
+search(game, rat, [0,0], 10)
+rat.gc.data = []
+traj3 = []
+for i in range(1000):
+    if i%10 == 0:
+        sys.stdout.write(str(i)+' ')
+        sys.stdout.flush()
+    v, direction = randMove(game, True, random.randint(3,6))
+    rat.makeAction(game, v, training=False, recording=True)
+    rat.gc.response(rat.Acpc, record=True) 
+    traj3.append([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)])
+    traj2.append([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)])
+
+plot_receptive_field(np.array([rat.gc.data]), np.array(traj3), plot_size=[1,1], bin_length=int(len(traj3)/15), fig_size=[5,5], fname="goal")
+plot_traj(np.array(traj3), fname="goal_sim")
+
+traj2=np.array(traj2)
+plot_receptive_field(rat.mpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="mpc")
+plot_receptive_field(rat.vpc.data.T, traj2, plot_size=[11,11], bin_length=int(traj2.shape[0]/15), fig_size=[11,11], fname="vpc")
+plot_receptive_field(rat.cpc.obj.data.T, traj2, plot_size=[14,14], bin_length=int(traj2.shape[0]/15), fig_size=[14,14], fname="cpc")
+plot_receptive_field(rat.mgc.data.T, np.array([[a,a,a,a,a] for a in traj2]).reshape((-1, 2)), plot_size=[30,15], bin_length=int(traj2.shape[0]*5/15), fig_size=[15,30], fname="mgc")
 
 
-# show the weight matrix
-#mapSize = [15,15]
-mapSize = [11,11]
-fig = plt.figure(figsize = [30, 60]);
-for pcIdx in np.arange(mapSize[0]*mapSize[1]):
-    plt.subplot(mapSize[0], mapSize[1], pcIdx + 1);
-    plt.imshow(vpc.w[:, pcIdx].reshape(v1.vn_height, v1.vn_width));
-#plt.show();
-fig.savefig(fpath+"weight.png")
+for exp in range(nExps):
+    rewardPos = [random.random() * (env_range[0][1]-env_range[0][0]) + env_range[0][0], random.random() * (env_range[1][1]-env_range[1][0]) + env_range[1][0]]
+    print("new reward position:", rewardPos)
+    for trial in range(nTrails):
+        initPos(game, rat)
+        #sim_gc(gc, MPCpop, [[50, 150], [50, 150]], 1000, bin_length=40) #[[50, 150], [50, 150]]
+        #ratGo(game, rat, rewardPos, tolerance, str(exp+1)+"_"+str(trial+1))
+        unifiedStrategy(game, rat, rewardPos, tolerance, str(exp+1)+"_"+str(trial+1))
+        
+game.close()
 
-# estimation
-#plot_receptive_field(vpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="vpc")
-plot_receptive_field(vpc.data.T, traj2, plot_size=[11,11], bin_length=int(traj2.shape[0]/15), fig_size=[11,11], fname="vpc")
 
-skip=500
-plot_receptive_field(cpc.obj.data[skip:,:].T, traj2[skip:,:], plot_size=[14,14], bin_length=int(traj2[skip:,:].shape[0]/15), fig_size=[14,14], fname="cpc")
 
-# Hopfield
-print("rw_max: ", np.max(cpc.rw))
-fig = plt.figure()
-plt.imshow(cpc.rw)
-fig.savefig(fpath+"rw.png")
+# save data into .mat file
+#n=4
+#simData = {'pos': trajectory, 'v1': v1.data, 'vn_height': v1.vn_height, 'vn_width': v1.vn_width}
+#sio.savemat('data/v1data'+str(n)+'.mat', simData, appendmat=False)
+

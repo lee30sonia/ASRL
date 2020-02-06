@@ -7,11 +7,13 @@ import cv2
 from scipy.ndimage.interpolation import shift
 import sys
 import math
+import scipy.io as sio
+noisy = True
 
 def create_environment():
     game = DoomGame()
     game.load_config('vizdoom/myConfig.cfg')  
-    game.set_doom_scenario_path('vizdoom/square.wad')
+    game.set_doom_scenario_path('vizdoom/square2.wad')
     #game.set_doom_scenario_path('vizdoom/tmaze.wad')
     #game.set_doom_map('map01')
     game.set_mode(Mode.PLAYER)
@@ -59,15 +61,22 @@ def turn90(game):
         game.make_action([0, 0, 0, 0, 1], int(math.ceil((game.get_game_variable(ANGLE) - deg)/10)))
     #print(game.get_game_variable(ANGLE))
         
+def turn120(game):
+    deg = round((game.get_game_variable(ANGLE) - 120)/120)*120
+    if deg < 0:
+        deg += 360
+        game.make_action([0, 0, 0, 0, 1], 10)
+    while game.get_game_variable(ANGLE) > deg+1:
+        game.make_action([0, 0, 0, 0, 1], int(math.ceil((game.get_game_variable(ANGLE) - deg)/10)))
+    #print(game.get_game_variable(ANGLE))
+        
 def lookAround(game):
     vision = game.get_state().screen_buffer
-    turn90(game)
+    turn120(game)
     vision = np.concatenate((vision, game.get_state().screen_buffer))
-    turn90(game)
+    turn120(game)
     vision = np.concatenate((vision, game.get_state().screen_buffer))
-    turn90(game)
-    vision = np.concatenate((vision, game.get_state().screen_buffer))
-    turn90(game)
+    turn120(game)
 
     return vision
 
@@ -101,9 +110,14 @@ def compute_receptive_field(act, x, y, bin_size):
         receptive_fields[neuron_idx] = ratemap;
     return receptive_fields;
 
-fpath="no-noise/"
+if noisy:
+    fpath="noisy2/"
+else:
+    fpath="no-noise/"
 def plot_receptive_field(activity, traj, plot_size=[1,1], bin_length=50, fig_size=[10,10], fname="untitled"):
     ratemaps = compute_receptive_field(activity, traj[:, 0], traj[:, 1], [int(traj[:, 0].size/bin_length), int(traj[:, 1].size/bin_length)]);
+    simData = {'r': ratemaps}
+    sio.savemat(fpath+fname+'.mat', simData, appendmat=False)
     num_neuron = ratemaps.shape[0];
     fig = plt.figure(figsize=fig_size);
     #plt.axis('off');
@@ -314,17 +328,18 @@ class CPC:
     def train(self, actV, actM, nIter=1):
         self.obj.train(np.concatenate((self.alpha*actV, (1-self.alpha)*actM), axis=1), nIter)
                  
-    def estimate(self, actV, actM, e=0.0, record=False):
+    def estimate(self, actV, actM, e=0.0, record=False, trainHop=False):
         Acpc = self.obj.estimate(np.concatenate((self.alpha*actV, (1-self.alpha)*actM), axis=1), e=e, record=record)
     
         # trainHopfield
-        n = Acpc.shape[1]
-        rw = np.matmul(Acpc.T, Acpc)
-        mask = np.ones((n, n)) - np.identity(n)
-        rw = rw*mask
-        if np.linalg.norm(rw.reshape(-1), axis=0) != 0:
-            self.rw = ( self.rw*self.cnt + rw/np.linalg.norm(rw.reshape(-1), axis=0) )/(self.cnt+1)
-            self.cnt += 1
+        if trainHop:
+            n = Acpc.shape[1]
+            rw = np.matmul(Acpc.T, Acpc)
+            mask = np.ones((n, n)) - np.identity(n)
+            rw = rw*mask
+            if np.linalg.norm(rw.reshape(-1), axis=0) != 0:
+                self.rw = ( self.rw*self.cnt + rw/np.linalg.norm(rw.reshape(-1), axis=0) )/(self.cnt+1)
+                self.cnt += 1
         return Acpc
 
 ### main / exploration ###
@@ -347,12 +362,12 @@ Av1 = v1.response(vis)
 
 ## Visual Place Cells ##
 #vpc = PlaceCell(225, v1.nNeurons, eta=3, noise=0.010)
-vpc = PlaceCell(121, v1.nNeurons, eta=15, noise=0.005)
-Avpc = vpc.estimate(Av1, e=0.9)
+vpc = PlaceCell(121, v1.nNeurons, eta=40, noise=0.008)
+Avpc = vpc.estimate(Av1, e=0.95)
 
 ## Motion Grid Cells ##
 nSteps = 5
-mgc = GCpop(90, 5, Ncpc=196, alphaC=0.05, eta=1)
+mgc = GCpop(90, 5, Ncpc=196, alphaC=0.10, eta=50)
 Amgc = mgc.dynamic()
 
 ## Motion Place Cells ##
@@ -360,8 +375,8 @@ mpc = PlaceCell(225, mgc.Nneurons, eta=1, inFilter=0.8, noise=0.004)
 Ampc = mpc.estimate(Amgc, e=0.8)
 
 ## Conjuctive Place Cells ##
-cpc = CPC(196, vpc.nNodes, mpc.nNodes, eta=15, noise=0.003, alpha=0.5)
-Acpc = cpc.estimate(Avpc, Ampc, e=0.2)
+cpc = CPC(196, vpc.nNodes, mpc.nNodes, eta=50, noise=0.005, alpha=0.3)
+Acpc = cpc.estimate(Avpc, Ampc, e=0.3)
 
 #random.seed(897)
 for i in range(5000):
@@ -369,22 +384,24 @@ for i in range(5000):
         sys.stdout.write(str(i)+' ')
         sys.stdout.flush()
     
-    vInt = random.randint(3,6)
-    #v = np.array(randMove(game, True, vInt)[0]) * 13.62 / nSteps * (random.random()*0.1+0.95) # -5% ~ +5% noise
-    randMove(game, True, vInt)
-    v = (np.array([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]) - np.array(pos)) / nSteps
+    #vInt = random.randint(3,6)
+    if noisy:
+        v = np.array(randMove(game, True, random.randint(3,6))[0]) * 13.62 / nSteps #* (random.random()*0.1+0.95) # -5% ~ +5% noise
+    else:
+        randMove(game, True, random.randint(3,6))
+        v = (np.array([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]) - np.array(pos)) / nSteps
     pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
     
     
     ## conjuctive & recurrent ##
-    cpc.train(Avpc, Ampc, nIter=5)
-    Acpc = cpc.estimate(Avpc, Ampc, e=0.2, record=True)
+    cpc.train(Avpc, Ampc, nIter=10)
+    Acpc = cpc.estimate(Avpc, Ampc, e=0.3, record=True, trainHop=(i>2000))
     
     ## visual pathway ##
     #Av1 = v1.response(game.get_state().screen_buffer)
     Av1 = v1.response(lookAround(game))
     vpc.train(Av1, nIter=20)
-    Avpc = vpc.estimate(Av1, e=0.9, record=True)
+    Avpc = vpc.estimate(Av1, e=0.95, record=True)
     
     ## self-motion pathway ##
     mgc.updateW(v)

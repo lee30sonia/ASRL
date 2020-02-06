@@ -7,6 +7,7 @@ import cv2
 from scipy.ndimage.interpolation import shift
 import sys
 import math
+noisy = False
 
 def create_environment():
     game = DoomGame()
@@ -75,7 +76,10 @@ def compute_receptive_field(act, x, y, bin_size):
         receptive_fields[neuron_idx] = ratemap;
     return receptive_fields;
 
-fpath="exp-uni/"
+if noisy:
+    fpath="exp-noisy/"
+else:
+    fpath="exp/"
 def plot_receptive_field(activity, traj, plot_size=[1,1], bin_length=50, fig_size=[10,10], fname="untitled"):
     ratemaps = compute_receptive_field(activity, traj[:, 0], traj[:, 1], [int(traj[:, 0].size/bin_length), int(traj[:, 1].size/bin_length)]);
     num_neuron = ratemaps.shape[0];
@@ -299,10 +303,12 @@ class GoalCell:
     def memorizeReward(self, rat, tRange = 50, decay = 0.8):
         # synapses from currently firing place cells are enhanced
         ripple = rat.Acpc.reshape((-1))/np.linalg.norm(rat.Acpc, axis=1)
+        #print(np.amax(ripple))
         self.w += ripple
         for t in range(tRange):
             ripple = rat.triggeredResponse(ripple).reshape(-1)
             ripple /= np.linalg.norm(ripple, axis=0)
+            #print(np.amax(ripple))
             self.w +=  ripple * (decay**(t+1))
         self.w /= np.linalg.norm(self.w, axis=0)
         self.gc_max = self.response(rat.Acpc)
@@ -330,27 +336,27 @@ class GoalCell:
 ### Wrapper for the whole system ###
 
 class System:
-    def __init__(self, initState, nSteps=5, Ncpc=100):
+    def __init__(self, initState, nSteps=5, Ncpc=196):
         self.nSteps = nSteps
         ## V1 ##
         self.v1 = V1(initState)
         self.Av1 = self.v1.response(initState)
         
         ## Visual Place Cells ##
-        self.vpc = PlaceCell(225, self.v1.nNeurons, eta=5, noise=0.008)
-        self.Avpc = self.vpc.estimate(self.Av1, e=0.7)
+        self.vpc = PlaceCell(121, self.v1.nNeurons, inFilter=0.8, eta=20, noise=0.005)
+        self.Avpc = self.vpc.estimate(self.Av1, e=0.9)
         
         ## Motion Grid Cells ##
-        self.mgc = GCpop(90, 5, Ncpc=Ncpc, alphaC=0.03, eta=0.1)
+        self.mgc = GCpop(90, 5, Ncpc=Ncpc, alphaC=0.10, eta=50)
         self.Amgc = self.mgc.dynamic()
         
         ## Motion Place Cells ##
-        self.mpc = PlaceCell(225, self.mgc.Nneurons, eta=1.5, inFilter=0.8, noise=0.004)
-        self.Ampc = self.mpc.estimate(self.Amgc, e=0.7)
+        self.mpc = PlaceCell(225, self.mgc.Nneurons, eta=1, inFilter=0.8, noise=0.004)
+        self.Ampc = self.mpc.estimate(self.Amgc, e=0.8)
         
         ## Conjuctive Place Cells ##
-        self.cpc = CPC(Ncpc, self.vpc.nNodes, self.mpc.nNodes, eta=0.8, noise=0.008, alpha=0.5)
-        self.Acpc = self.cpc.estimate(self.Avpc, self.Ampc, e=0.5)
+        self.cpc = CPC(Ncpc, self.vpc.nNodes, self.mpc.nNodes, eta=50, noise=0.005, alpha=0.5)
+        self.Acpc = self.cpc.estimate(self.Avpc, self.Ampc, e=0.2)
         self.rw = np.zeros([Ncpc, Ncpc]) # recurrent weights
         self.cnt = 0
 
@@ -359,13 +365,13 @@ class System:
 
 
     def trainHopfield(self):
-        n = self.Acpc.shape[0]
-        rw = np.matmul(self.Acpc.reshape((1, -1)).T, self.Acpc.reshape((1, -1)))
+        n = self.Acpc.shape[1]
+        rw = np.matmul(self.Acpc.T, self.Acpc)
         mask = np.ones((n, n)) - np.identity(n)
         rw = rw*mask
         if np.linalg.norm(rw.reshape(-1), axis=0) != 0:
             self.rw = ( self.rw*self.cnt + rw/np.linalg.norm(rw.reshape(-1), axis=0) )/(self.cnt+1)
-        self.cnt += 1
+            self.cnt += 1
         
     def showRW(self):
         fig = plt.figure();
@@ -376,11 +382,11 @@ class System:
     def triggeredResponse(self, Acpc):
         return np.matmul(Acpc.reshape((1, -1)), self.rw)
 
-    def makeAction(self, game, v, training=False, trainHop=True):
+    def makeAction(self, game, v, training=False, trainHop=False, recording=False):
         ## conjuctive & recurrent ##
         if training:
-            self.cpc.train(self.Avpc, self.Ampc, nIter=50)
-        self.Acpc = self.cpc.estimate(self.Avpc, self.Ampc, e=0.3, record=True)
+            self.cpc.train(self.Avpc, self.Ampc, nIter=10)
+        self.Acpc = self.cpc.estimate(self.Avpc, self.Ampc, e=0.2, record=recording)
         if trainHop:
             self.trainHopfield()
         
@@ -388,16 +394,16 @@ class System:
         #self.Av1 = self.v1.response(game.get_state().screen_buffer)
         self.Av1 = self.v1.response(lookAround(game))
         if training:
-            self.vpc.train(self.Av1, nIter=70)
-        self.Avpc = self.vpc.estimate(self.Av1, e=0.8, record=True)
+            self.vpc.train(self.Av1, nIter=20)
+        self.Avpc = self.vpc.estimate(self.Av1, e=0.9, record=recording)
         
         ## self-motion pathway ##
         self.mgc.updateW(v)
         for step in range(self.nSteps):
-            self.Amgc = self.mgc.dynamic(self.Acpc, True)
+            self.Amgc = self.mgc.dynamic(self.Acpc, record=recording)
         if training:
-            self.mpc.train(self.Amgc, nIter=70)
-        self.Ampc = self.mpc.estimate(self.Amgc, e=0.6, record=True)
+            self.mpc.train(self.Amgc, nIter=5)
+        self.Ampc = self.mpc.estimate(self.Amgc, e=0.8, record=recording)
 
 
 
@@ -467,9 +473,11 @@ def search(game, rat, rewardPos, tolerance):
         rat.makeAction(game, v, training=False)
         
         if pos[0]>rewardPos[0]-tolerance and pos[0]<rewardPos[0]+tolerance and pos[1]>rewardPos[1]-tolerance and pos[1]<rewardPos[1]+tolerance: 
-            print("reward! (random search)")
+            print("reward! (random search)", pos)
             rewarded = True
-            rat.gc.memorizeReward(rat, tRange=5, decay=0.1)
+            rat.gc.memorizeReward(rat, tRange=1, decay=0.95)
+            rat.gc.memorizeReward(rat, tRange=1, decay=0.95)
+            #rat.gc.memorizeReward(rat, tRange=5, decay=0.1)
 
 
 ### explicit strategy ###
@@ -559,8 +567,8 @@ def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
     
     speed = 1
     p = np.exp(-rat.gc.gc_max) # possibility to random walk
-    threshold_low = rat.gc.gc_max*0.7
-    threshold_high = rat.gc.gc_max*0.95
+    threshold_low = rat.gc.gc_max*0.6 #0.7
+    threshold_high = rat.gc.gc_max*0.7 #0.95
     
     v, direction = randMove(game, True) # randomly decide a direction
     pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
@@ -617,15 +625,16 @@ def unifiedStrategy(game, rat, rewardPos, tolerance, trial=""):
         if pos[0]>rewardPos[0]-tolerance and pos[0]<rewardPos[0]+tolerance and pos[1]>rewardPos[1]-tolerance and pos[1]<rewardPos[1]+tolerance: 
             print("reward!", len(traj))
             rewarded = True
-            rat.gc.memorizeReward(rat, tRange=3, decay=0.1)
+            #rat.gc.memorizeReward(rat, tRange=3, decay=0.1)
+            rat.gc.memorizeReward(rat, tRange=3, decay=0.95)
             break
         else:
             rat.gc.forget(1.01) # gradually forget
             p = np.exp(-rat.gc.gc_max)
-            threshold_low = rat.gc.gc_max*0.7
-            threshold_high = rat.gc.gc_max*0.95
+            threshold_low = rat.gc.gc_max*0.6
+            threshold_high = rat.gc.gc_max*0.7
         
-        if len(traj) > 5000:
+        if len(traj) > 2000:
             print("fail!")
             break
     plot_traj(np.array(traj), fname="unified"+trial)
@@ -650,19 +659,21 @@ traj2 = []
 rat = System(lookAround(game), nSteps=5)
 
 # exploration
-for i in range(1500):
+for i in range(5000):
     if i%10 == 0:
         sys.stdout.write(str(i)+' ')
         sys.stdout.flush()
     
-    vInt = random.randint(3,6)
-    v = np.array(randMove(game, True, vInt)[0]) * 13.66 / rat.nSteps * (random.random()*0.2+0.9) # -10% ~ +10% noise
-    #randMove(game, True, vInt)
-    #v = (np.array([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]) - np.array(pos)) / nSteps
+    #vInt = random.randint(3,6)
+    if noisy:
+        v = np.array(randMove(game, True, random.randint(3,6))[0]) * 13.66 / rat.nSteps * (random.random()*0.2+0.9) # -10% ~ +10% noise
+    else:
+        randMove(game, True, random.randint(3,6))
+        v = (np.array([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]) - np.array(pos)) / rat.nSteps
     pos = [game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)]
     traj2.append(pos)
     
-    rat.makeAction(game, v, True)
+    rat.makeAction(game, v, training=True, trainHop=(i>2000), recording=True)
     
     
 #traj2 = np.array(rat.traj).reshape([-1,rat.nSteps,2])[:, 0, :]
@@ -670,10 +681,22 @@ traj2 = np.array(traj2)
 plot_traj(traj2, fname="exploration") # check that exploration covers well
 
 # experiments
-nExps = 2 # number of changing reward position
+nExps = 3 # number of changing reward position
 nTrails = 3 # number of testing of the same reward position
-tolerance = 10
+tolerance = 15
 env_range = [[-130, 130], [-130, 130]]
+    
+search(game, rat, [0,0], 10)
+rat.gc.data = []
+traj3 = []
+for i in range(2000):
+    v, direction = randMove(game, True, random.randint(3,6))
+    rat.makeAction(game, v, training=False, recording=False)
+    rat.gc.response(rat.Acpc, record=True) 
+    traj3.append([game.get_game_variable(POSITION_X), game.get_game_variable(POSITION_Y)])
+plot_receptive_field(np.array([rat.gc.data]), np.array(traj3), plot_size=[1,1], bin_length=int(len(traj3)/15), fig_size=[5,5], fname="goal")
+plot_traj(np.array(traj3), fname="goal_sim")
+
 for exp in range(nExps):
     rewardPos = [random.random() * (env_range[0][1]-env_range[0][0]) + env_range[0][0], random.random() * (env_range[1][1]-env_range[1][0]) + env_range[1][0]]
     print("new reward position:", rewardPos)
@@ -696,16 +719,16 @@ game.close()
 plot_receptive_field(rat.mpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="mpc")
 
 # show the weight matrix
-mapSize = [15,15]
-fig = plt.figure(figsize = [15, 15]);
+mapSize = [11,11]
+fig = plt.figure(figsize = [30, 60]);
 for pcIdx in np.arange(mapSize[0]*mapSize[1]):
     plt.subplot(mapSize[0], mapSize[1], pcIdx + 1);
     plt.imshow(rat.vpc.w[:, pcIdx].reshape(rat.v1.vn_height, rat.v1.vn_width));
 fig.savefig(fpath+"weight.png")
 
-plot_receptive_field(rat.vpc.data.T, traj2, plot_size=[15,15], bin_length=int(traj2.shape[0]/15), fig_size=[15,15], fname="vpc")
+plot_receptive_field(rat.vpc.data.T, traj2, plot_size=[11,11], bin_length=int(traj2.shape[0]/15), fig_size=[11,11], fname="vpc")
 skip=200
-plot_receptive_field(rat.cpc.obj.data[skip:,:].T, traj2[skip:,:], plot_size=[10,10], bin_length=int(traj2[skip:,:].shape[0]/15), fig_size=[10,10], fname="cpc")
+plot_receptive_field(rat.cpc.obj.data[skip:,:].T, traj2[skip:,:], plot_size=[14,14], bin_length=int(traj2[skip:,:].shape[0]/15), fig_size=[14,14], fname="cpc")
 
 
 
